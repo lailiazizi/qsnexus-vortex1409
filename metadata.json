@@ -1,0 +1,10 @@
+{
+  "name": "ISeeQS / QS Nexus - Quantity Surveying AR Visualizer",
+  "description": "A structural visualization tool for Quantity Surveying students to bridge the gap between 2D technical drawings and 3D structural models using AR overlay simulation.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
