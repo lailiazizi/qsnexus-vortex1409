@@ -44,7 +44,11 @@ export const ZapparARView: React.FC<ZapparARViewProps> = ({
     }
     return null;
   });
-  const [isAligning, setIsAligning] = useState<boolean>(false);
+  const [isAligning, setIsAligning] = useState<boolean>(() => {
+    if (drawingUrl) return false;
+    if (projectId && localStorage.getItem(`iseeqs_drawing_${projectId}`)) return false;
+    return true;
+  });
   const [drawingMatVisible, setDrawingMatVisible] = useState<boolean>(true);
   const [drawingMatOpacity, setDrawingMatOpacity] = useState<number>(0.85);
   const [sheetScale, setSheetScale] = useState<number>(1.0);

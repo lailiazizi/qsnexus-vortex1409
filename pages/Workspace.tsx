@@ -1226,7 +1226,7 @@ export const Workspace: React.FC = () => {
                 }}
                 className="w-full font-black py-3.5 rounded-2xl text-center text-xs uppercase tracking-wider bg-blue-600 hover:bg-blue-700 text-white shadow-xl shadow-blue-500/20 transition-all flex items-center justify-center gap-2 active:scale-98"
               >
-                <span>🚀</span> Publish &amp; Ready to Scan AR
+                <span>🚀</span> Save &amp; Continue to AR
               </Link>
 
               <div className="flex justify-between items-center px-1 pt-1">
