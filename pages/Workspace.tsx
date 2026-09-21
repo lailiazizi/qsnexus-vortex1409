@@ -78,6 +78,9 @@ export const Workspace: React.FC = () => {
     return localStorage.getItem(`iseeqs_target_url_${id}`) ? 'done' : 'idle';
   });
   const [trainError, setTrainError] = useState<string | null>(null);
+  const [dbSynced, setDbSynced] = useState<boolean>(() => {
+    return !!localStorage.getItem(`iseeqs_drawing_${id}`);
+  });
   const [isSaved, setIsSaved] = useState(() => {
     return !!localStorage.getItem(`iseeqs_saved_${id}`);
   });
@@ -102,6 +105,7 @@ export const Workspace: React.FC = () => {
           setDrawing(savedDrawing);
           setTargetTrained(true);
           setTrainStatus('done');
+          setDbSynced(true);
         }
       });
       getProjectFromDb(id).then((projectData) => {
@@ -307,11 +311,13 @@ export const Workspace: React.FC = () => {
         localStorage.setItem(`iseeqs_target_url_${id}`, `drawing-plan-${id}`);
         setTargetTrained(true);
         setTrainStatus('done');
+        setDbSynced(true);
         setTrainError(null);
       } catch (err: any) {
         console.error('Database write error:', err);
         setTrainStatus('done'); // Client fallback still succeeds
         setTargetTrained(true);
+        setDbSynced(true);
       }
     };
 
@@ -327,6 +333,7 @@ export const Workspace: React.FC = () => {
     setDrawing(null);
     setTargetTrained(false);
     setTrainStatus('idle');
+    setDbSynced(false);
     setTrainError(null);
     localStorage.removeItem(`iseeqs_drawing_${id}`);
     localStorage.removeItem(`iseeqs_target_url_${id}`);
@@ -529,6 +536,7 @@ export const Workspace: React.FC = () => {
                 <span className="text-xl font-bold">×</span>
               </button>
             </div>
+
             <div className="p-8 grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[70vh] overflow-y-auto scrollbar-hide">
               {([
                 'pad-footing', 'strip-foundation', 'stump', 'column',
@@ -640,7 +648,7 @@ export const Workspace: React.FC = () => {
             </button>
           </div>
 
-          {/* Upload Drawing & CAD buttons */}
+          {/* Upload Drawing Marker & CAD buttons */}
           <div className="space-y-2">
             {!drawing ? (
               <div 
@@ -660,23 +668,23 @@ export const Workspace: React.FC = () => {
               >
                 <div className="flex items-center justify-center gap-2 text-blue-700 font-black text-xs uppercase tracking-wider mb-0.5">
                   <span className="text-base group-hover:scale-110 transition-transform">📁</span>
-                  <span>{trainStatus === 'uploading' ? 'Saving to Database...' : 'Upload Plan Drawing'}</span>
+                  <span>{trainStatus === 'uploading' ? 'Receiving to Database...' : 'Upload Image Marker'}</span>
                 </div>
-                <div className="text-[9px] text-blue-500 font-medium">PNG, JPG (Image Tracker)</div>
+                <div className="text-[9px] text-blue-500 font-medium">PNG, JPG (Image Tracker for AR)</div>
               </div>
             ) : (
               <div className="bg-emerald-50/90 border border-emerald-300 rounded-2xl p-2.5 flex items-center justify-between gap-2 shadow-sm">
                 <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-10 h-10 rounded-xl overflow-hidden border border-emerald-400 shrink-0 bg-white shadow-inner flex items-center justify-center">
-                    <img src={drawing} alt="Plan" className="w-full h-full object-cover" />
+                  <div className="w-10 h-10 rounded-xl overflow-hidden border border-emerald-400 shrink-0 bg-white shadow-inner flex items-center justify-center p-0.5">
+                    <img src={drawing} alt="Plan" className="w-full h-full object-contain" />
                   </div>
                   <div className="min-w-0">
                     <div className="text-[11px] font-black text-emerald-900 uppercase tracking-tight flex items-center gap-1 truncate">
-                      <span className="text-emerald-600 font-bold">✓</span> Plan Drawing Loaded
+                      <span className="text-emerald-600 font-bold">✓</span> Image Marker Ready
                     </div>
                     <div className="text-[8px] text-emerald-700 font-mono flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      Database Synced • AR Target Ready
+                      Received in DB
                     </div>
                   </div>
                 </div>
@@ -721,6 +729,7 @@ export const Workspace: React.FC = () => {
           <input ref={dxfInputRef} type="file" accept=".dxf,.dwg,text/plain" onChange={handleDxfUpload} className="hidden" />
         </div>
 
+        {/* Construct New Component Button */}
         <div className="p-4 border-b border-slate-100 bg-white">
           <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Construct New</span>
           <button 
@@ -740,7 +749,12 @@ export const Workspace: React.FC = () => {
         </div>
 
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
-          {components.map((comp) => {
+          {components.length === 0 ? (
+            <div className="p-6 text-center text-slate-400 text-xs font-bold uppercase tracking-wider">
+              No components added
+            </div>
+          ) : (
+            components.map((comp) => {
             const isSelected = selectedCompId === comp.id;
             return (
               <div
@@ -776,7 +790,8 @@ export const Workspace: React.FC = () => {
                 </div>
               </div>
             );
-          })}
+          })
+        )}
         </div>
       </aside>
 

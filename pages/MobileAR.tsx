@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ProjectComponent, ComponentType } from '../types';
 import { ZapparARView } from '../components/ZapparARView';
+import { getDrawingFromDb, getProjectFromDb } from '../utils/drawingDatabase';
 import LZString from 'lz-string';
 
 export const MobileAR: React.FC = () => {
@@ -13,11 +14,15 @@ export const MobileAR: React.FC = () => {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    // 1. Check for saved or cached drawing
+    // 1. Check for saved or cached drawing (localStorage + IndexedDB)
     if (id) {
       const savedDrawing = localStorage.getItem(`iseeqs_drawing_${id}`);
       if (savedDrawing) {
         setDrawingUrl(savedDrawing);
+      } else {
+        getDrawingFromDb(id).then((dbDrawing) => {
+          if (dbDrawing) setDrawingUrl(dbDrawing);
+        });
       }
     }
 
@@ -74,34 +79,47 @@ export const MobileAR: React.FC = () => {
       }
     }
 
-    // Default Demo Pad Footing & Column structure
-    const demoData: ProjectComponent[] = [
-      {
-        id: 'pf-demo',
-        name: 'Pad Footing PF-1',
-        type: 'pad-footing' as ComponentType,
-        status: 'Ready',
-        dimensions: { x: 1200, y: 1200, z: 400 },
-        position: { x: 0, y: 0, z: 0 },
-        rotation: { x: 0, y: 0, z: 0 },
-        includeReinforcement: true,
-        showMeasurements: true,
-        lastEdited: 'now'
-      },
-      {
-        id: 'st-demo',
-        name: 'Stump ST-1',
-        type: 'stump' as ComponentType,
-        status: 'Ready',
-        dimensions: { x: 250, y: 250, z: 900 },
-        position: { x: 0, y: 0, z: 650 },
-        rotation: { x: 0, y: 0, z: 0 },
-        includeReinforcement: true,
-        showMeasurements: true,
-        lastEdited: 'now'
-      }
-    ];
-    setComponents(demoData);
+    // ✅ Fallback to IndexedDB
+    if (id) {
+      getProjectFromDb(id).then((projectRecord) => {
+        if (projectRecord && projectRecord.components && projectRecord.components.length > 0) {
+          setComponents(projectRecord.components);
+          setReady(true);
+          return;
+        }
+        // If still no components, load demo data
+        const demoData: ProjectComponent[] = [
+          {
+            id: 'pf-demo',
+            name: 'Pad Footing PF-1',
+            type: 'pad-footing' as ComponentType,
+            status: 'Ready',
+            dimensions: { x: 1200, y: 1200, z: 400 },
+            position: { x: 0, y: 0, z: 0 },
+            rotation: { x: 0, y: 0, z: 0 },
+            includeReinforcement: true,
+            showMeasurements: true,
+            lastEdited: 'now'
+          },
+          {
+            id: 'st-demo',
+            name: 'Stump ST-1',
+            type: 'stump' as ComponentType,
+            status: 'Ready',
+            dimensions: { x: 250, y: 250, z: 900 },
+            position: { x: 0, y: 0, z: 650 },
+            rotation: { x: 0, y: 0, z: 0 },
+            includeReinforcement: true,
+            showMeasurements: true,
+            lastEdited: 'now'
+          }
+        ];
+        setComponents(demoData);
+        setReady(true);
+      });
+      return;
+    }
+
     setReady(true);
   }, [id, location.search]);
 

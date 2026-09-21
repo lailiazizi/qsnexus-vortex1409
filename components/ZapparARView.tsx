@@ -284,10 +284,19 @@ export const ZapparARView: React.FC<ZapparARViewProps> = ({
     const textureLoader = new THREE.TextureLoader();
     textureLoader.load(trackedDrawing, (texture) => {
       texture.colorSpace = THREE.SRGBColorSpace;
-      const aspect = texture.image ? texture.image.width / texture.image.height : 1.414; // Default A4/A3
+      const imgW = texture.image?.naturalWidth || texture.image?.width || 0;
+      const imgH = texture.image?.naturalHeight || texture.image?.height || 0;
+      const aspect = imgW > 0 && imgH > 0 ? imgW / imgH : 1.414;
       
-      const widthMm = baseDim;
-      const heightMm = baseDim / aspect;
+      let widthMm = baseDim;
+      let heightMm = baseDim;
+      if (aspect >= 1) {
+        widthMm = baseDim;
+        heightMm = baseDim / aspect;
+      } else {
+        heightMm = baseDim;
+        widthMm = baseDim * aspect;
+      }
 
       // 1. Drawing Sheet Mesh
       const planeGeo = new THREE.PlaneGeometry(widthMm, heightMm);

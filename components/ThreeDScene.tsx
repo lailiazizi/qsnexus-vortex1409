@@ -469,7 +469,24 @@ export const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         drawingUrl,
         (texture) => {
           texture.colorSpace = THREE.SRGBColorSpace;
-          const planeGeo = new THREE.PlaneGeometry(4000, 3000);
+          
+          // Fix aspect ratio for image marker using the natural dimensions of the uploaded image
+          const imgW = texture.image?.naturalWidth || texture.image?.width || 4000;
+          const imgH = texture.image?.naturalHeight || texture.image?.height || 3000;
+          const aspect = imgW > 0 && imgH > 0 ? imgW / imgH : 1.333;
+
+          const baseSpan = 4000;
+          let planeWidth = baseSpan;
+          let planeHeight = baseSpan;
+          if (aspect >= 1) {
+            planeWidth = baseSpan;
+            planeHeight = baseSpan / aspect;
+          } else {
+            planeHeight = baseSpan;
+            planeWidth = baseSpan * aspect;
+          }
+
+          const planeGeo = new THREE.PlaneGeometry(planeWidth, planeHeight);
           const planeMat = new THREE.MeshStandardMaterial({
             map: texture,
             transparent: true,
@@ -1535,230 +1552,6 @@ export const ThreeDScene: React.FC<ThreeDSceneProps> = ({
           </span>
         </div>
       )}
-
-      {/* Floating On-Screen Navigation Toolbar (Left side) */}
-      <div className="absolute top-4 left-4 z-[50] flex flex-col gap-2 pointer-events-auto">
-        <div className="bg-white/95 backdrop-blur-md border border-slate-200/80 shadow-lg rounded-2xl p-1.5 flex flex-col gap-1">
-          <button
-            onClick={() => setActiveTool('select')}
-            className={`p-2.5 rounded-xl text-xs font-black transition-all flex items-center justify-center ${
-              activeTool === 'select' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-600 hover:bg-slate-100'
-            }`}
-            title="Select & Gizmo Tool (Default)"
-          >
-            ↖️
-          </button>
-          <button
-            onClick={() => setActiveTool('orbit')}
-            className={`p-2.5 rounded-xl text-xs font-black transition-all flex items-center justify-center ${
-              activeTool === 'orbit' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-600 hover:bg-slate-100'
-            }`}
-            title="Orbit Camera (Rotate 3D View)"
-          >
-            🔄
-          </button>
-          <button
-            onClick={() => setActiveTool('pan')}
-            className={`p-2.5 rounded-xl text-xs font-black transition-all flex items-center justify-center ${
-              activeTool === 'pan' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-600 hover:bg-slate-100'
-            }`}
-            title="Pan Camera (Move View Left/Right/Up/Down)"
-          >
-            ✋
-          </button>
-          <div className="h-px bg-slate-200 my-0.5" />
-          <button
-            onClick={() => {
-              const newZ = Math.min(4.0, zoom + 0.2);
-              onZoomChange?.(Number(newZ.toFixed(2)));
-            }}
-            className="p-2 rounded-xl text-xs font-black text-slate-600 hover:bg-slate-100 hover:text-blue-600 flex items-center justify-center"
-            title="Zoom In"
-          >
-            ➕
-          </button>
-          <button
-            onClick={() => {
-              const newZ = Math.max(0.05, zoom - 0.2);
-              onZoomChange?.(Number(newZ.toFixed(2)));
-            }}
-            className="p-2 rounded-xl text-xs font-black text-slate-600 hover:bg-slate-100 hover:text-blue-600 flex items-center justify-center"
-            title="Zoom Out"
-          >
-            ➖
-          </button>
-        </div>
-
-        {/* Snapping Control Widget */}
-        <div className="bg-white/95 backdrop-blur-md border border-slate-200/80 shadow-lg rounded-2xl p-2 flex flex-col gap-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <button
-              onClick={() => {
-                const next = !localSnap;
-                setLocalSnap(next);
-                onSnapToggle?.(next);
-              }}
-              className={`px-2.5 py-1 text-[9px] font-black uppercase rounded-lg transition-all flex items-center gap-1.5 ${
-                localSnap ? 'bg-emerald-600 text-white shadow-sm' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-              }`}
-              title="Toggle Grid / Edge Snapping"
-            >
-              <span>🧲 Snap {localSnap ? 'ON' : 'OFF'}</span>
-            </button>
-          </div>
-          {localSnap && (
-            <div className="flex gap-1">
-              {[25, 50, 100, 250, 500].map((step) => (
-                <button
-                  key={step}
-                  onClick={() => {
-                    setLocalGridSize(step);
-                    onSnapGridSizeChange?.(step);
-                  }}
-                  className={`px-1.5 py-0.5 text-[8px] font-black rounded font-mono ${
-                    localGridSize === step ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  {step}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Top Right Controls & Quick Views */}
-      <div className="absolute top-4 right-4 z-[50] flex flex-col items-end gap-2 pointer-events-auto">
-        <div className="flex items-center gap-2">
-          {/* Gizmo Tool Mode Switcher (Move by default vs Scale) */}
-          {selectedCompId && (
-            <div className="bg-white/95 backdrop-blur-md border border-slate-200 shadow-md rounded-xl p-1 flex gap-1 items-center">
-              <button
-                onClick={() => setGizmoMode('move')}
-                className={`px-3 py-1 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all flex items-center gap-1 ${
-                  gizmoMode === 'move'
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:bg-slate-100'
-                }`}
-                title="Move / Translate Component Position (Default)"
-              >
-                <span>✋ Move (W)</span>
-              </button>
-              <button
-                onClick={() => setGizmoMode('scale')}
-                className={`px-3 py-1 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all flex items-center gap-1 ${
-                  gizmoMode === 'scale'
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:bg-slate-100'
-                }`}
-                title="Scale / Resize Component Dimensions"
-              >
-                <span>📐 Scale (R)</span>
-              </button>
-            </div>
-          )}
-
-          <div className="bg-white/90 backdrop-blur-md border border-slate-200 shadow-md rounded-xl p-1.5 flex gap-1 items-center">
-            <button
-              onClick={() => alignCamera('iso')}
-              className="px-2.5 py-1 text-[9px] font-black uppercase tracking-wider rounded-lg bg-slate-100 hover:bg-blue-50 hover:text-blue-600 transition-colors text-slate-600"
-              title="Isometric 3D View"
-            >
-              ISO
-            </button>
-            <button
-              onClick={() => alignCamera('top')}
-              className="px-2.5 py-1 text-[9px] font-black uppercase tracking-wider rounded-lg bg-slate-100 hover:bg-blue-50 hover:text-blue-600 transition-colors text-slate-600"
-              title="Top View (Plan)"
-            >
-              TOP
-            </button>
-            <button
-              onClick={() => alignCamera('front')}
-              className="px-2.5 py-1 text-[9px] font-black uppercase tracking-wider rounded-lg bg-slate-100 hover:bg-blue-50 hover:text-blue-600 transition-colors text-slate-600"
-              title="Front View"
-            >
-              FRONT
-            </button>
-            <button
-              onClick={() => alignCamera('side')}
-              className="px-2.5 py-1 text-[9px] font-black uppercase tracking-wider rounded-lg bg-slate-100 hover:bg-blue-50 hover:text-blue-600 transition-colors text-slate-600"
-              title="Side View"
-            >
-              SIDE
-            </button>
-          </div>
-        </div>
-
-        {/* Selected Component Status / Local Coordinate Colors & Quick Elevate Buttons */}
-        {selectedCompId ? (
-          <div className="flex items-center gap-2">
-            <div className="bg-white/95 backdrop-blur-sm border border-slate-200 shadow-sm rounded-lg px-2.5 py-1 flex items-center gap-3 text-[9px] font-black">
-              <span className="flex items-center gap-1 text-red-600">
-                <span className="w-2 h-2 rounded-full bg-red-500 inline-block"></span> X ({gizmoMode === 'move' ? 'Move X' : 'Length'})
-              </span>
-              <span className="flex items-center gap-1 text-green-600">
-                <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span> Y ({gizmoMode === 'move' ? 'Move Y' : 'Width'})
-              </span>
-              <span className="flex items-center gap-1 text-blue-600">
-                <span className="w-2 h-2 rounded-full bg-blue-500 inline-block"></span> Z ({gizmoMode === 'move' ? 'Elevate Z' : 'Height'})
-              </span>
-            </div>
-
-            {/* Quick 1-Click Elevation Controls */}
-            {gizmoMode === 'move' && (
-              <div className="bg-blue-900/90 text-white backdrop-blur-sm border border-blue-700/80 shadow-sm rounded-lg p-0.5 flex items-center gap-1 text-[9px] font-black">
-                <button
-                  onClick={() => {
-                    const sel = components.find((c) => c.id === selectedCompId);
-                    if (sel) {
-                      onUpdateComponent?.(selectedCompId, {
-                        position: { ...sel.position, z: sel.position.z + 100 },
-                      });
-                    }
-                  }}
-                  className="px-2 py-0.5 bg-blue-600 hover:bg-blue-500 rounded text-white transition-colors"
-                  title="Raise Elevation (+100mm)"
-                >
-                  ▲ Z +100
-                </button>
-                <button
-                  onClick={() => {
-                    const sel = components.find((c) => c.id === selectedCompId);
-                    if (sel) {
-                      onUpdateComponent?.(selectedCompId, {
-                        position: { ...sel.position, z: Math.max(0, sel.position.z - 100) },
-                      });
-                    }
-                  }}
-                  className="px-2 py-0.5 bg-blue-800 hover:bg-blue-700 rounded text-blue-200 transition-colors"
-                  title="Lower Elevation (-100mm)"
-                >
-                  ▼ Z -100
-                </button>
-                <button
-                  onClick={() => {
-                    const sel = components.find((c) => c.id === selectedCompId);
-                    if (sel) {
-                      onUpdateComponent?.(selectedCompId, {
-                        position: { ...sel.position, z: 0 },
-                      });
-                    }
-                  }}
-                  className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded text-slate-300 transition-colors"
-                  title="Drop component to ground level (Z=0)"
-                >
-                  Ground (0)
-                </button>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="bg-white/80 backdrop-blur-sm border border-slate-200 shadow-sm rounded-lg px-2.5 py-1 text-[9px] font-bold text-slate-500">
-            Left Click: Select/Drag Component | Right Drag: Rotate 3D View
-          </div>
-        )}
-      </div>
     </div>
   );
 };
