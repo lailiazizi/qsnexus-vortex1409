@@ -945,15 +945,16 @@ export const ThreeDScene: React.FC<ThreeDSceneProps> = ({
       return Math.hypot(px - (ax + t * (bx - ax)), py - (ay + t * (by - ay)));
     };
 
-    // 1. High-precision Screen-Space Proximity Picking (finds closest axis arrow/segment within generous 42px radius)
+    // 1. High-precision Screen-Space Proximity Picking (finds closest axis arrow/segment within generous radius)
     let bestAxis: DragAxis = null;
-    let bestDist = 42;
+    let bestDist = 56; // Generous 56px radius for easy cursor grabbing
 
     if (sZ.visible) {
       const distZTip = Math.hypot(mx - sZ.x, my - sZ.y);
       const distZSeg = distToSeg(mx, my, sOrigin.x, sOrigin.y, sZ.x, sZ.y);
       const dZ = Math.min(distZTip, distZSeg);
-      if (dZ < bestDist) {
+      // Give Z axis a slightly higher priority if cursor is near it
+      if (dZ < bestDist + 10) {
         bestDist = dZ;
         bestAxis = 'z';
       }
@@ -971,7 +972,7 @@ export const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 
     if (sY.visible) {
       const distYTip = Math.hypot(mx - sY.x, my - sY.y);
-      const distYSeg = distToSeg(mx, my, sOrigin.x, sOrigin.y, sX.x, sX.y);
+      const distYSeg = distToSeg(mx, my, sOrigin.x, sOrigin.y, sY.x, sY.y);
       const dY = Math.min(distYTip, distYSeg);
       if (dY < bestDist) {
         bestDist = dY;
@@ -1206,7 +1207,12 @@ export const ThreeDScene: React.FC<ThreeDSceneProps> = ({
         const mmPerPixel = (distanceRef.current * 0.0016) / Math.max(0.1, zoom);
 
         let planeIntersected = false;
-        if (dragStartPlaneHit.current && raycaster.ray.intersectPlane(plane, currentHit)) {
+        if (axis === 'z') {
+          // For vertical Z elevation, screen-space mouse delta (up = elevate, down = lower)
+          // is vastly superior and immune to grazing angle singularities at high tilts!
+          deltaMm = Math.round(-totalMouseDy * mmPerPixel);
+          planeIntersected = true;
+        } else if (dragStartPlaneHit.current && raycaster.ray.intersectPlane(plane, currentHit)) {
           const rawDelta = currentHit[axis] - dragStartPlaneHit.current[axis];
           if (Math.abs(rawDelta) < 60000) {
             deltaMm = Math.round(rawDelta);
@@ -1216,34 +1222,31 @@ export const ThreeDScene: React.FC<ThreeDSceneProps> = ({
 
         if (!planeIntersected) {
           // Robust screen-space fallback
-          if (axis === 'z') {
-            deltaMm = Math.round(-totalMouseDy * mmPerPixel);
-          } else {
-            const axisPoint3D = origin3D.clone().add(axisVector.clone().multiplyScalar(1000));
-            const p0 = origin3D.clone().project(camera);
-            const p1 = axisPoint3D.clone().project(camera);
-            const s0x = ((p0.x + 1) * rect.width) / 2;
-            const s0y = ((-p0.y + 1) * rect.height) / 2;
-            const s1x = ((p1.x + 1) * rect.width) / 2;
-            const s1y = ((-p1.y + 1) * rect.height) / 2;
-            const dirX = s1x - s0x;
-            const dirY = s1y - s0y;
-            const len = Math.hypot(dirX, dirY);
-            if (len > 0.01) {
-              const uX = dirX / len;
-              const uY = dirY / len;
-              const projectedPixels = totalMouseDx * uX + totalMouseDy * uY;
-              deltaMm = Math.round(projectedPixels * (1000 / len));
-            }
+          const axisPoint3D = origin3D.clone().add(axisVector.clone().multiplyScalar(1000));
+          const p0 = origin3D.clone().project(camera);
+          const p1 = axisPoint3D.clone().project(camera);
+          const s0x = ((p0.x + 1) * rect.width) / 2;
+          const s0y = ((-p0.y + 1) * rect.height) / 2;
+          const s1x = ((p1.x + 1) * rect.width) / 2;
+          const s1y = ((-p1.y + 1) * rect.height) / 2;
+          const dirX = s1x - s0x;
+          const dirY = s1y - s0y;
+          const len = Math.hypot(dirX, dirY);
+          if (len > 0.01) {
+            const uX = dirX / len;
+            const uY = dirY / len;
+            const projectedPixels = totalMouseDx * uX + totalMouseDy * uY;
+            deltaMm = Math.round(projectedPixels * (1000 / len));
           }
         }
 
         if (gizmoMode === 'move') {
           let newPos: number;
           if (axis === 'z') {
-            newPos = Math.max(0, Math.min(20000, dragStartPosition.current.z + deltaMm));
+            // Allows elevation from underground foundations (-10,000 mm) up to multi-storey (+20,000 mm)
+            newPos = Math.max(-10000, Math.min(20000, dragStartPosition.current.z + deltaMm));
             if (localSnap && localGridSize > 0) {
-              newPos = Math.max(0, Math.min(20000, Math.round(newPos / localGridSize) * localGridSize));
+              newPos = Math.max(-10000, Math.min(20000, Math.round(newPos / localGridSize) * localGridSize));
               deltaMm = newPos - dragStartPosition.current.z;
             }
             compGroup.position.z = newPos + curD / 2;
@@ -1755,30 +1758,6 @@ export const ThreeDScene: React.FC<ThreeDSceneProps> = ({
             Left Click: Select/Drag Component | Right Drag: Rotate 3D View
           </div>
         )}
-      </div>
-
-      {/* Navigation Help Cue in bottom left */}
-      <div className="absolute bottom-4 left-4 z-[50] pointer-events-none bg-slate-900/85 backdrop-blur-md text-white border border-slate-700/50 shadow-lg rounded-xl px-3 py-2 text-[10px] space-y-1">
-        <div className="flex items-center gap-2 font-bold opacity-90">
-          <span className="text-emerald-400">🖱️ Left Drag</span>
-          <span>Move component (XY Ground plane)</span>
-        </div>
-        <div className="flex items-center gap-2 font-bold opacity-90">
-          <span className="text-blue-400">🔵 Blue Arrow / Shift+Drag</span>
-          <span className="text-blue-200">Lift Z Elevation Up / Down</span>
-        </div>
-        <div className="flex items-center gap-2 font-bold opacity-90">
-          <span className="text-indigo-400">🖱️ Right Drag</span>
-          <span>Rotate 3D scene (Orbit view)</span>
-        </div>
-        <div className="flex items-center gap-2 font-bold opacity-90">
-          <span className="text-amber-400">🖱️ MMB / Pan Tool</span>
-          <span>Pan camera view</span>
-        </div>
-        <div className="flex items-center gap-2 font-bold opacity-90">
-          <span className="text-cyan-400">⚙️ Scroll Wheel</span>
-          <span>Zoom in / out ({Math.round(zoom * 100)}%)</span>
-        </div>
       </div>
     </div>
   );

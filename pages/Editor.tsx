@@ -3,6 +3,7 @@ import { Link, useParams, useSearchParams, useNavigate } from 'react-router-dom'
 import { COMPONENT_CONFIGS, COMPONENT_COLORS } from '../constants';
 import { ThreeDBox } from '../components/ThreeDBox';
 import { ComponentType } from '../types';
+import { saveDrawingToDb, getDrawingFromDb } from '../utils/drawingDatabase';
 
 export const Editor: React.FC = () => {
   const { id } = useParams();
@@ -34,46 +35,52 @@ export const Editor: React.FC = () => {
     setDimensions({ x: newConfig.defaults.x, y: newConfig.defaults.y, z: newConfig.defaults.z });
   }, [typeParam]);
 
-  // Check if target already trained for this project
+  // Check if target already trained or drawing in IndexedDB for this project
   useEffect(() => {
     const existing = localStorage.getItem(`iseeqs_target_url_${id}`);
     if (existing) setTargetTrained(true);
+    if (id) {
+      getDrawingFromDb(id).then((savedDrawing) => {
+        if (savedDrawing) {
+          setImage(savedDrawing);
+          setTargetTrained(true);
+        }
+      });
+    }
   }, [id]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Show image preview
-    const reader = new FileReader();
-    reader.onload = (ev) => setImage(ev.target?.result as string);
-    reader.readAsDataURL(file);
-
     try {
       setIsTraining(true);
       setTargetTrained(false);
 
-      const arrayBuffer = await file.arrayBuffer();
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        const dataUrl = ev.target?.result as string;
+        setImage(dataUrl);
 
-      // Upload or process target
-      try {
-        const { uploadTarget } = await import('../supabase');
-        const publicUrl = await uploadTarget(id!, arrayBuffer);
-        if (publicUrl) {
-          localStorage.setItem(`iseeqs_target_url_${id}`, publicUrl);
-          setTargetTrained(true);
-        } else {
-          localStorage.setItem(`iseeqs_target_url_${id}`, 'ready');
-          setTargetTrained(true);
+        if (id) {
+          try {
+            await saveDrawingToDb(id, dataUrl, {
+              fileName: file.name,
+              fileSize: file.size,
+              mimeType: file.type
+            });
+            localStorage.setItem(`iseeqs_target_url_${id}`, `drawing-plan-${id}`);
+            setTargetTrained(true);
+          } catch (dbErr) {
+            console.error('Error saving drawing to IndexedDB:', dbErr);
+          }
         }
-      } catch {
-        localStorage.setItem(`iseeqs_target_url_${id}`, 'ready');
-        setTargetTrained(true);
-      }
+        setIsTraining(false);
+      };
+      reader.readAsDataURL(file);
 
     } catch (err) {
       console.error('Training/upload failed:', err);
-    } finally {
       setIsTraining(false);
     }
   };
@@ -266,7 +273,7 @@ export const Editor: React.FC = () => {
             to={`/qr-result/${id}`}
             className="flex-1 bg-blue-600 py-3 rounded-xl text-xs font-bold text-white text-center hover:bg-blue-700 transition-all shadow-lg shadow-blue-200"
           >
-            Generate AR
+            Scan AR (Zappar)
           </Link>
         </div>
       </aside>

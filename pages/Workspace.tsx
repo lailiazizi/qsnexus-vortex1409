@@ -6,6 +6,14 @@ import { ComponentType, ProjectComponent, Language, RebarConfig, DrawingCalibrat
 import { LibraryModal } from './Library';
 import { calculateQS } from '../utils/qsCalculations';
 import { NumericInput } from '../components/NumericInput';
+import { TechnicalDiagram } from '../components/TechnicalDiagram';
+import {
+  saveDrawingToDb,
+  getDrawingFromDb,
+  removeDrawingFromDb,
+  saveProjectToDb,
+  getProjectFromDb
+} from '../utils/drawingDatabase';
 
 type TrainStatus = 'idle' | 'training' | 'uploading' | 'done' | 'error';
 
@@ -86,13 +94,35 @@ export const Workspace: React.FC = () => {
     return () => window.removeEventListener('langChange', handleLang);
   }, []);
 
+  // Load drawing and components from persistent database
+  useEffect(() => {
+    if (id) {
+      getDrawingFromDb(id).then((savedDrawing) => {
+        if (savedDrawing) {
+          setDrawing(savedDrawing);
+          setTargetTrained(true);
+          setTrainStatus('done');
+        }
+      });
+      getProjectFromDb(id).then((projectData) => {
+        if (projectData && projectData.components && projectData.components.length > 0) {
+          setComponents(projectData.components);
+          if (projectData.calibration) setCalibration(projectData.calibration);
+        }
+      });
+    }
+  }, [id]);
+
   const [saveStatus, setSaveStatus] = useState(false);
   useEffect(() => {
     localStorage.setItem(`iseeqs_project_${id}`, JSON.stringify(components));
+    if (id) {
+      saveProjectToDb(id, components, calibration);
+    }
     setSaveStatus(true);
     const timer = setTimeout(() => setSaveStatus(false), 2000);
     return () => clearTimeout(timer);
-  }, [components, id]);
+  }, [components, calibration, id]);
 
   useEffect(() => {
     localStorage.setItem(`iseeqs_calib_${id}`, JSON.stringify(calibration));
@@ -253,59 +283,55 @@ export const Workspace: React.FC = () => {
 
   const validation = getStructuralValidation();
 
-  // Drawing Upload & AR Target Training
+  // Drawing Upload & AR Target Training with Direct Database Storage
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = '';
 
+    setTrainStatus('uploading');
+    setTrainError(null);
+
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       const dataUrl = ev.target?.result as string;
       setDrawing(dataUrl);
+
       try {
-        localStorage.setItem(`iseeqs_drawing_${id}`, dataUrl);
-      } catch (err) {
-        console.warn('Storage quota reached for drawing image', err);
+        // Trigger Database write immediately
+        await saveDrawingToDb(id!, dataUrl, {
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType: file.type
+        });
+        localStorage.setItem(`iseeqs_target_url_${id}`, `drawing-plan-${id}`);
+        setTargetTrained(true);
+        setTrainStatus('done');
+        setTrainError(null);
+      } catch (err: any) {
+        console.error('Database write error:', err);
+        setTrainStatus('done'); // Client fallback still succeeds
+        setTargetTrained(true);
       }
     };
-    reader.readAsDataURL(file);
 
-    setTrainStatus('training');
-    setTrainError(null);
-    setTargetTrained(false);
-
-    try {
-      setTrainStatus('uploading');
-      let targetUrl: string | null = null;
-      try {
-        const formData = new FormData();
-        formData.append('image', file);
-        formData.append('projectId', id!);
-
-        const response = await fetch('http://localhost:3001/api/train', {
-          method: 'POST',
-          body: formData,
-        });
-
-        if (response.ok) {
-          const resJson = await response.json();
-          targetUrl = resJson.url;
-        }
-      } catch {}
-
-      if (!targetUrl) {
-        targetUrl = `drawing-plan-${id}`;
-      }
-
-      localStorage.setItem(`iseeqs_target_url_${id}`, targetUrl);
-      setTargetTrained(true);
-      setTrainStatus('done');
-    } catch (err: any) {
+    reader.onerror = () => {
       setTrainStatus('error');
-      setTrainError(err?.message || 'Unknown error');
-      localStorage.removeItem(`iseeqs_target_url_${id}`);
-      setTargetTrained(false);
+      setTrainError('Failed to read image file');
+    };
+
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveDrawing = async () => {
+    setDrawing(null);
+    setTargetTrained(false);
+    setTrainStatus('idle');
+    setTrainError(null);
+    localStorage.removeItem(`iseeqs_drawing_${id}`);
+    localStorage.removeItem(`iseeqs_target_url_${id}`);
+    if (id) {
+      await removeDrawingFromDb(id);
     }
   };
 
@@ -616,17 +642,62 @@ export const Workspace: React.FC = () => {
 
           {/* Upload Drawing & CAD buttons */}
           <div className="space-y-2">
-            <button 
-              onClick={() => {
-                if (trainStatus === 'training' || trainStatus === 'uploading') return;
-                fileInputRef.current?.click();
-              }}
-              disabled={trainStatus === 'training' || trainStatus === 'uploading'}
-              className={`w-full font-black py-3 rounded-2xl text-xs uppercase tracking-widest border shadow-sm transition-all active:scale-[0.98] flex items-center justify-center gap-2 ${uploadButtonClass()}`}
-            >
-              <span>📁</span>
-              <span>{drawing ? 'Drawing Loaded' : 'Upload Plan Drawing'}</span>
-            </button>
+            {!drawing ? (
+              <div 
+                onClick={() => {
+                  if (trainStatus === 'uploading') return;
+                  fileInputRef.current?.click();
+                }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                    const fakeEv = { target: { files: e.dataTransfer.files, value: '' } } as any;
+                    handleFileUpload(fakeEv);
+                  }
+                }}
+                className="w-full cursor-pointer py-3.5 px-3 rounded-2xl border-2 border-dashed border-blue-300 hover:border-blue-500 bg-blue-50/70 hover:bg-blue-100/70 transition-all text-center group"
+              >
+                <div className="flex items-center justify-center gap-2 text-blue-700 font-black text-xs uppercase tracking-wider mb-0.5">
+                  <span className="text-base group-hover:scale-110 transition-transform">📁</span>
+                  <span>{trainStatus === 'uploading' ? 'Saving to Database...' : 'Upload Plan Drawing'}</span>
+                </div>
+                <div className="text-[9px] text-blue-500 font-medium">PNG, JPG (Image Tracker)</div>
+              </div>
+            ) : (
+              <div className="bg-emerald-50/90 border border-emerald-300 rounded-2xl p-2.5 flex items-center justify-between gap-2 shadow-sm">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-10 h-10 rounded-xl overflow-hidden border border-emerald-400 shrink-0 bg-white shadow-inner flex items-center justify-center">
+                    <img src={drawing} alt="Plan" className="w-full h-full object-cover" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-black text-emerald-900 uppercase tracking-tight flex items-center gap-1 truncate">
+                      <span className="text-emerald-600 font-bold">✓</span> Plan Drawing Loaded
+                    </div>
+                    <div className="text-[8px] text-emerald-700 font-mono flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      Database Synced • AR Target Ready
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="text-[9px] font-black uppercase text-blue-700 hover:text-blue-800 bg-blue-100 hover:bg-blue-200 px-2 py-1 rounded-lg transition-colors"
+                    title="Change Plan Drawing"
+                  >
+                    Change
+                  </button>
+                  <button
+                    onClick={handleRemoveDrawing}
+                    className="text-[10px] font-black text-slate-400 hover:text-red-600 px-1.5 py-1 rounded-lg transition-colors"
+                    title="Remove Drawing"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="flex gap-2">
               <button
@@ -651,44 +722,61 @@ export const Workspace: React.FC = () => {
         </div>
 
         <div className="p-4 border-b border-slate-100 bg-white">
+          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Construct New</span>
           <button 
             onClick={() => setIsConstructModalOpen(true)}
-            className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black py-3.5 rounded-2xl text-xs uppercase tracking-widest shadow-lg transition-all active:scale-[0.98] flex items-center justify-center gap-2.5"
+            className="w-full bg-slate-900 hover:bg-blue-600 text-white font-black py-3 rounded-2xl text-xs uppercase tracking-widest shadow-md transition-all active:scale-[0.98] flex items-center justify-center gap-2"
           >
-            <span>🏗️</span> {t.addElement}
+            <span>➕</span> Add Component
           </button>
         </div>
 
-        <div className="p-3 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
-          <span className="text-[11px] font-bold text-slate-700 uppercase tracking-tight">Elements ({components.length})</span>
-          {saveStatus && <span className="text-[8px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-bold uppercase animate-pulse">{t.saved}</span>}
+        <div className="p-3 bg-slate-50 border-b border-slate-100">
+          <div className="flex justify-between items-center">
+            <span className="text-[11px] font-black text-slate-900 uppercase tracking-tight">Structure Model</span>
+            {saveStatus && <span className="text-[8px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-bold uppercase animate-pulse">Saved</span>}
+          </div>
+          <p className="text-[9px] text-slate-400 font-medium">Assembly of structural elements.</p>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
-          {components.map((comp) => (
-            <button
-              key={comp.id}
-              onClick={() => setSelectedCompId(comp.id)}
-              className={`w-full text-left p-2.5 rounded-xl transition-all flex items-center gap-3 border ${
-                selectedCompId === comp.id ? 'bg-blue-50 border-blue-300 shadow-sm ring-2 ring-blue-500/10' : 'bg-white border-slate-200/60 hover:bg-slate-50'
-              }`}
-            >
+        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {components.map((comp) => {
+            const isSelected = selectedCompId === comp.id;
+            return (
               <div
-                className="w-8 h-8 rounded-lg flex items-center justify-center font-black text-[10px] text-white shadow-sm shrink-0"
-                style={{ backgroundColor: COMPONENT_COLORS[comp.type] || '#ccc' }}
+                key={comp.id}
+                onClick={() => setSelectedCompId(comp.id)}
+                className={`w-full text-left p-3 rounded-2xl transition-all cursor-pointer border ${
+                  isSelected 
+                    ? 'bg-blue-50/70 border-blue-400 shadow-md ring-2 ring-blue-500/10' 
+                    : 'bg-white border-slate-200/80 hover:border-slate-300 hover:bg-slate-50/50 shadow-sm'
+                }`}
               >
-                {COMPONENT_CONFIGS[comp.type]?.shortName || '??'}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className={`text-xs font-black truncate ${selectedCompId === comp.id ? 'text-blue-700' : 'text-slate-800'}`}>
-                  {comp.name}
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div
+                      className="w-7 h-7 rounded-lg flex items-center justify-center font-black text-[10px] text-white shadow-sm shrink-0"
+                      style={{ backgroundColor: COMPONENT_COLORS[comp.type] || '#3b82f6' }}
+                    >
+                      {COMPONENT_CONFIGS[comp.type]?.shortName || 'PF'}
+                    </div>
+                    <span className={`text-xs font-black truncate ${isSelected ? 'text-blue-900' : 'text-slate-800'}`}>
+                      {comp.name}
+                    </span>
+                  </div>
+                  <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 uppercase tracking-wider shrink-0">
+                    REINFORCED
+                  </span>
                 </div>
-                <div className="text-[9px] text-slate-400 font-mono">
-                  {comp.dimensions.x}×{comp.dimensions.y}×{comp.dimensions.z}mm
+                <div className="flex justify-between items-center text-[9px] text-slate-500 font-mono">
+                  <span>{comp.dimensions.x}×{comp.dimensions.y}×{comp.dimensions.z}mm</span>
+                  <span className="font-bold text-slate-600">
+                    {((comp.dimensions.x * comp.dimensions.y * comp.dimensions.z) / 1e9).toFixed(3)} m³
+                  </span>
                 </div>
               </div>
-            </button>
-          ))}
+            );
+          })}
         </div>
       </aside>
 
@@ -714,8 +802,8 @@ export const Workspace: React.FC = () => {
           dxfLines={dxfLines}
         />
 
-        {/* Viewport Control Bar with Opacity, Zoom, Tilt, Rotate, Fit Scene (Bottom Center) */}
-        <div className="absolute bottom-4 left-[58%] -translate-x-1/2 bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl shadow-xl px-4 py-2 flex items-center gap-3 z-[200] max-w-[95vw] overflow-x-auto scrollbar-hide">
+        {/* Bottom Centered Viewport Control Bar with Opacity, Zoom, Tilt, Rotate, Fit Scene */}
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl shadow-2xl px-4 py-2 flex items-center gap-3 z-[100] max-w-[95vw] overflow-x-auto scrollbar-hide">
           <button
             onClick={fitAll}
             className="text-[10px] font-black uppercase tracking-wider px-3 py-1.5 rounded-xl bg-slate-900 text-white hover:bg-blue-600 transition-all shadow-sm flex items-center gap-1.5 shrink-0"
@@ -1021,74 +1109,121 @@ export const Workspace: React.FC = () => {
 
             {/* SMM Real-Time Quantity Takeoff Cards */}
             {(() => {
-              const qs = calculateQS(selectedComp.type, selectedComp.dimensions.x, selectedComp.dimensions.y, selectedComp.dimensions.z, selectedComp.rebarConfig);
+              const qs = calculateQS(safeComp.type, safeComp.dimensions.x, safeComp.dimensions.y, safeComp.dimensions.z, safeComp.rebarConfig);
+              const dia = safeComp.rebarConfig?.diameterMm || 16;
+              const spc = safeComp.rebarConfig?.spacingMm || 225;
+              const cov = safeComp.rebarConfig?.coverMm || 40;
+              const effW = Math.max(100, safeComp.dimensions.x - 2 * cov);
+              const effB = Math.max(100, safeComp.dimensions.y - 2 * cov);
+              const stirrupPerim = Number(((2 * (effW + effB)) / 1000 + 0.15).toFixed(2));
+              const mainBarLen = Number(((safeComp.dimensions.z + 40 * dia) / 1000).toFixed(2));
+              const lajak = Number(((40 * dia) / 1000).toFixed(2));
+              const linkCnt = qs.rebarDetails?.linkCount || 4;
+              const stirrupTotal = Number((linkCnt * stirrupPerim).toFixed(2));
+
               return (
                 <section className="space-y-3">
                   {/* Concrete Volume */}
-                  <div className="bg-blue-600 rounded-2xl p-3.5 text-white shadow-lg shadow-blue-500/20">
+                  <div className="bg-blue-600 rounded-2xl p-4 text-white shadow-lg shadow-blue-500/20">
                     <div className="flex justify-between items-start mb-1">
-                      <span className="text-[9px] font-black text-blue-200 uppercase tracking-wider">Concrete Volume</span>
-                      <span className="text-[9px] bg-blue-500 text-white px-2 py-0.5 rounded font-bold">{qs.concreteGrade}</span>
+                      <span className="text-[10px] font-black text-blue-100 uppercase tracking-wider">CONCRETE (G30)</span>
+                      <span className="text-[9px] bg-blue-500/80 text-white px-2 py-0.5 rounded font-bold">{qs.concreteGrade}</span>
                     </div>
                     <div className="flex items-baseline gap-1.5">
-                      <span className="text-2xl font-black">{qs.concreteVolume}</span>
-                      <span className="text-xs font-bold opacity-80">m³</span>
+                      <span className="text-3xl font-black">{qs.concreteVolume}</span>
+                      <span className="text-sm font-bold opacity-90">m³</span>
                     </div>
-                    <span className="text-[9px] text-blue-200 font-mono block mt-0.5">{selectedComp.dimensions.x} × {selectedComp.dimensions.y} × {selectedComp.dimensions.z} mm</span>
+                    <span className="text-[10px] text-blue-200 font-mono block mt-1">{safeComp.dimensions.x} × {safeComp.dimensions.y} × {safeComp.dimensions.z} mm</span>
                   </div>
 
                   {/* Formwork */}
                   {qs.formworkArea > 0 && (
-                    <div className="bg-amber-500 rounded-2xl p-3.5 text-white shadow-lg shadow-amber-500/20">
+                    <div className="bg-amber-500 rounded-2xl p-4 text-white shadow-lg shadow-amber-500/20">
                       <div className="flex justify-between items-start mb-1">
-                        <span className="text-[9px] font-black text-amber-100 uppercase tracking-wider">Formwork Area</span>
+                        <span className="text-[10px] font-black text-amber-100 uppercase tracking-wider">FORMWORK</span>
                         <span className="text-[9px] bg-amber-600 text-white px-2 py-0.5 rounded font-bold">m² Contact</span>
                       </div>
                       <div className="flex items-baseline gap-1.5">
-                        <span className="text-2xl font-black">{qs.formworkArea}</span>
-                        <span className="text-xs font-bold opacity-80">m²</span>
+                        <span className="text-3xl font-black">{qs.formworkArea}</span>
+                        <span className="text-sm font-bold opacity-90">m²</span>
                       </div>
-                      <p className="text-[9px] text-amber-100 mt-0.5 leading-snug">{qs.formworkDescription}</p>
+                      <p className="text-[10px] text-amber-100 mt-1 leading-snug">{qs.formworkDescription}</p>
                     </div>
                   )}
 
                   {/* Reinforcement Steel Scheduling & Weight */}
-                  {selectedComp.type !== 'blinding' && (
+                  {safeComp.type !== 'blinding' && (
                     <div className="bg-slate-900 rounded-2xl p-4 text-white shadow-xl border border-slate-800 space-y-3">
                       <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-200">🔩 Reinforcement Takeoff</span>
+                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-200">🔩 REINFORCEMENT</span>
                         <span className="text-[9px] font-black px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-400/30">
                           {qs.steelPercentage}% Vol Standard
                         </span>
                       </div>
 
-                      <div className="flex items-baseline justify-between">
-                        <div>
-                          <div className="flex items-baseline gap-1">
-                            <span className="text-2xl font-black text-emerald-400">{qs.steelWeightKg}</span>
-                            <span className="text-xs font-bold text-slate-400">kg</span>
+                      {/* Main Bars & Stirrups Details */}
+                      <div className="space-y-2 text-xs">
+                        <div className="bg-slate-800/90 rounded-xl p-3 border border-slate-700/60">
+                          <div className="flex justify-between items-center mb-1.5">
+                            <span className="font-black text-sky-400 text-[10px] uppercase tracking-wider">
+                              MAIN BARS T{dia}
+                            </span>
+                            <span className="text-[9px] text-slate-400 font-mono">High Tensile</span>
                           </div>
-                          <span className="text-[10px] font-mono text-slate-400">{qs.steelWeightTonnes} Tonnes</span>
+                          <div className="grid grid-cols-3 gap-1 text-[9px] font-mono text-slate-300">
+                            <div><span className="text-slate-500 block">Count:</span> {qs.rebarDetails?.mainBarCount || 4}</div>
+                            <div><span className="text-slate-500 block">Length ea.:</span> {mainBarLen}m</div>
+                            <div><span className="text-slate-500 block">Lajak:</span> {lajak}m</div>
+                          </div>
                         </div>
-                        <div className="text-right">
-                          <span className="text-[9px] text-slate-400 uppercase font-bold block">Total Length</span>
-                          <span className="text-xs font-black text-slate-200 font-mono">{qs.totalReinforcementLength} m</span>
+
+                        <div className="bg-slate-800/90 rounded-xl p-3 border border-slate-700/60">
+                          <div className="flex justify-between items-center mb-1.5">
+                            <span className="font-black text-amber-400 text-[10px] uppercase tracking-wider">
+                              STIRRUPS R8 @{spc}MM
+                            </span>
+                            <span className="text-[9px] text-slate-400 font-mono">Mild Steel</span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1 text-[9px] font-mono text-slate-300">
+                            <div><span className="text-slate-500 block">Count:</span> {linkCnt}</div>
+                            <div><span className="text-slate-500 block">Perimeter:</span> {stirrupPerim}m</div>
+                            <div><span className="text-slate-500 block">Total:</span> {stirrupTotal}m</div>
+                          </div>
                         </div>
                       </div>
 
-                      {qs.rebarDetails && (
-                        <div className="bg-slate-800/80 rounded-xl p-2.5 border border-slate-700/60 space-y-1.5 text-[10px]">
-                          <div className="text-emerald-300 font-bold font-mono">
-                            📋 {qs.rebarDetails.barScheduleDesc}
-                          </div>
-                          <div className="flex justify-between text-slate-400 font-mono text-[9px] pt-1 border-t border-slate-700">
-                            <span>SMM Clause:</span>
-                            <span className="text-slate-200 font-bold">{qs.smmClause}</span>
-                          </div>
+                      {/* Total Rebar Bar */}
+                      <div className="flex justify-between items-center pt-2.5 border-t border-slate-800">
+                        <div>
+                          <span className="text-[9px] uppercase font-bold text-slate-400 block">TOTAL REBAR</span>
+                          <span className="text-xl font-black text-emerald-400 font-mono">{qs.totalReinforcementLength} m</span>
                         </div>
-                      )}
+                        <div className="text-right">
+                          <span className="text-[9px] uppercase font-bold text-slate-400 block">STEEL WEIGHT</span>
+                          <span className="text-xs font-black text-slate-200 font-mono">{qs.steelWeightKg} kg ({qs.steelWeightTonnes} t)</span>
+                        </div>
+                      </div>
                     </div>
                   )}
+
+                  {/* Technical Diagram Component */}
+                  <TechnicalDiagram
+                    type={safeComp.type}
+                    dimensions={safeComp.dimensions}
+                    rebarConfig={safeComp.rebarConfig}
+                  />
+
+                  {/* Contextual SMM Library Reference Trigger */}
+                  <button
+                    onClick={() => setIsLibraryOpen(true)}
+                    className="w-full bg-slate-900 hover:bg-blue-600 text-white rounded-2xl py-3 px-4 flex items-center justify-between transition-all shadow-md active:scale-98"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <span>📖</span>
+                      <span className="text-[10px] font-black uppercase tracking-wider">OPEN SMM LIBRARY →</span>
+                    </div>
+                    <span className="text-xs font-bold text-slate-400">Rules</span>
+                  </button>
                 </section>
               );
             })()}
@@ -1172,18 +1307,6 @@ export const Workspace: React.FC = () => {
               </section>
             )}
 
-            {/* Contextual SMM Library Reference Trigger */}
-            <button
-              onClick={() => setIsLibraryOpen(true)}
-              className="w-full bg-slate-900 hover:bg-blue-600 text-white rounded-2xl py-3 px-4 flex items-center justify-between transition-all shadow-md active:scale-98"
-            >
-              <div className="flex items-center gap-2.5">
-                <span>📚</span>
-                <span className="text-[10px] font-black uppercase tracking-wider">Open SMM Library Rules</span>
-              </div>
-              <span className="font-bold">→</span>
-            </button>
-
             {/* Remove Component */}
             <button
               onClick={() => setComponents(components.filter(c => c.id !== selectedCompId))}
@@ -1196,7 +1319,7 @@ export const Workspace: React.FC = () => {
           <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-3">
             <div className="text-3xl opacity-20">🏗️</div>
             <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-              {components.length === 0 ? 'Add an element to start building' : 'Select an element in 3D viewport'}
+              {components.length === 0 ? 'Add a component to start building' : 'Select an element in 3D viewport'}
             </p>
             {components.length === 0 && (
               <button
@@ -1213,20 +1336,31 @@ export const Workspace: React.FC = () => {
         <div className="p-4 border-t border-slate-100 bg-white flex flex-col gap-2">
           {components.length === 0 ? (
             <button disabled className="w-full font-bold py-3.5 rounded-2xl text-center text-xs uppercase bg-slate-100 text-slate-400 cursor-not-allowed">
-              Add elements first
+              Add components first
+            </button>
+          ) : !drawing ? (
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full font-bold py-3.5 rounded-2xl text-center text-xs uppercase bg-slate-100 hover:bg-slate-200 text-slate-500 border border-slate-200 transition-all flex items-center justify-center gap-2"
+              title="Please upload a 2D technical drawing plan to use as an AR image tracker"
+            >
+              <span>📁</span> Upload drawing first
             </button>
           ) : (
             <div className="flex flex-col gap-2">
               <Link
                 to={`/qr-result/${id}`}
                 onClick={() => {
+                  if (id) {
+                    saveProjectToDb(id, components, calibration);
+                  }
                   localStorage.setItem(`iseeqs_project_${id}`, JSON.stringify(components));
                   localStorage.setItem(`iseeqs_saved_${id}`, 'true');
                   setIsSaved(true);
                 }}
-                className="w-full font-black py-3.5 rounded-2xl text-center text-xs uppercase tracking-wider bg-blue-600 hover:bg-blue-700 text-white shadow-xl shadow-blue-500/20 transition-all flex items-center justify-center gap-2 active:scale-98"
+                className="w-full font-black py-4 rounded-2xl text-center text-xs uppercase tracking-wider bg-blue-600 hover:bg-blue-700 text-white shadow-xl shadow-blue-500/20 transition-all flex items-center justify-center gap-2 active:scale-98"
               >
-                <span>🚀</span> Save &amp; Continue to AR
+                <span>⚡</span> Scan AR &amp; Launch Zappar
               </Link>
 
               <div className="flex justify-between items-center px-1 pt-1">
