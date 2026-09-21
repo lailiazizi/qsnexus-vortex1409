@@ -14,8 +14,17 @@ import {
   saveProjectToDb,
   getProjectFromDb
 } from '../utils/drawingDatabase';
+import {
+  uploadMarkerToCloud,
+  saveProjectToCloud,
+  loadProjectFromCloud,
+  fetchMarkerAsDataUrl,
+  clearMarkerInCloud
+} from '../utils/cloudSync';
+import { isSupabaseConfigured } from '../supabase';
 
 type TrainStatus = 'idle' | 'training' | 'uploading' | 'done' | 'error';
+type CloudStatus = 'off' | 'idle' | 'saving' | 'saved' | 'error';
 
 export const Workspace: React.FC = () => {
   const { id } = useParams();
@@ -78,9 +87,12 @@ export const Workspace: React.FC = () => {
     return localStorage.getItem(`iseeqs_target_url_${id}`) ? 'done' : 'idle';
   });
   const [trainError, setTrainError] = useState<string | null>(null);
-  const [dbSynced, setDbSynced] = useState<boolean>(() => {
-    return !!localStorage.getItem(`iseeqs_drawing_${id}`);
-  });
+  // Cloud (Supabase) state: reflects what really reached the cloud, not what we hope did.
+  const [cloudStatus, setCloudStatus] = useState<CloudStatus>(isSupabaseConfigured ? 'idle' : 'off');
+  const [cloudMessage, setCloudMessage] = useState<string | null>(null);
+  const [cloudReady, setCloudReady] = useState(false);
+  const [modelSync, setModelSync] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [modelSyncError, setModelSyncError] = useState<string | null>(null);
   const [isSaved, setIsSaved] = useState(() => {
     return !!localStorage.getItem(`iseeqs_saved_${id}`);
   });
@@ -97,25 +109,84 @@ export const Workspace: React.FC = () => {
     return () => window.removeEventListener('langChange', handleLang);
   }, []);
 
-  // Load drawing and components from persistent database
-  useEffect(() => {
-    if (id) {
-      getDrawingFromDb(id).then((savedDrawing) => {
-        if (savedDrawing) {
-          setDrawing(savedDrawing);
-          setTargetTrained(true);
-          setTrainStatus('done');
-          setDbSynced(true);
-        }
-      });
-      getProjectFromDb(id).then((projectData) => {
-        if (projectData && projectData.components && projectData.components.length > 0) {
-          setComponents(projectData.components);
-          if (projectData.calibration) setCalibration(projectData.calibration);
-        }
-      });
+  // Upload the marker to Supabase and report the real result
+  const syncMarkerToCloud = useCallback(async (dataUrl: string, fileName: string) => {
+    if (!id) return;
+    if (!isSupabaseConfigured) {
+      setCloudStatus('off');
+      return;
+    }
+    setCloudStatus('saving');
+    setCloudMessage(null);
+    const res = await uploadMarkerToCloud(id, dataUrl, fileName);
+    if (res.ok) {
+      setCloudStatus('saved');
+    } else {
+      setCloudStatus('error');
+      setCloudMessage(res.error);
     }
   }, [id]);
+
+  // Load drawing and components: this browser's copy first, then the cloud copy fills any gaps
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+
+    (async () => {
+      const localDrawing = await getDrawingFromDb(id);
+      const localProject = await getProjectFromDb(id);
+      if (cancelled) return;
+
+      if (localDrawing) {
+        setDrawing(localDrawing);
+        setTargetTrained(true);
+        setTrainStatus('done');
+      }
+      const hasLocalComponents = !!(localProject && localProject.components && localProject.components.length > 0);
+      if (localProject && hasLocalComponents) {
+        setComponents(localProject.components);
+        if (localProject.calibration) setCalibration(localProject.calibration);
+      }
+
+      if (!isSupabaseConfigured) return;
+
+      const res = await loadProjectFromCloud(id);
+      if (cancelled) return;
+      if (!res.ok) {
+        setCloudStatus('error');
+        setCloudMessage(res.error);
+        return; // do not enable cloud saving until we know what is already in the cloud
+      }
+
+      const cloud = res.data;
+      if (cloud && cloud.components.length > 0 && !hasLocalComponents) {
+        setComponents(cloud.components);
+        if (cloud.calibration) setCalibration(cloud.calibration);
+      }
+
+      if (cloud && cloud.markerPath) {
+        if (!localDrawing) {
+          const url = await fetchMarkerAsDataUrl(cloud.markerPath);
+          if (cancelled) return;
+          if (url) {
+            setDrawing(url);
+            setTargetTrained(true);
+            setTrainStatus('done');
+            saveDrawingToDb(id, url, { fileName: cloud.markerName || 'marker.png' });
+          }
+        }
+        setCloudStatus('saved');
+      } else if (localDrawing) {
+        // Marker exists only in this browser (uploaded before cloud sync existed): upload it now
+        syncMarkerToCloud(localDrawing, 'marker');
+      }
+      setCloudReady(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id, syncMarkerToCloud]);
 
   const [saveStatus, setSaveStatus] = useState(false);
   useEffect(() => {
@@ -131,6 +202,24 @@ export const Workspace: React.FC = () => {
   useEffect(() => {
     localStorage.setItem(`iseeqs_calib_${id}`, JSON.stringify(calibration));
   }, [calibration, id]);
+
+  // Debounced cloud save of the model, only after the cloud copy has been loaded
+  useEffect(() => {
+    if (!id || !isSupabaseConfigured || !cloudReady) return;
+    if (components.length === 0) return; // never overwrite cloud data with an empty project
+    setModelSync('saving');
+    const timer = setTimeout(async () => {
+      const res = await saveProjectToCloud(id, components, calibration);
+      if (res.ok) {
+        setModelSync('saved');
+        setModelSyncError(null);
+      } else {
+        setModelSync('error');
+        setModelSyncError(res.error);
+      }
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [components, calibration, id, cloudReady]);
   
   const selectedComp = components.find(c => c.id === selectedCompId) || components[0] || null;
   
@@ -287,7 +376,44 @@ export const Workspace: React.FC = () => {
 
   const validation = getStructuralValidation();
 
-  // Drawing Upload & AR Target Training with Direct Database Storage
+  // Helper: downscale image and re-encode to JPEG with a white background for transparency
+  const downscaleImage = (dataUrl: string, maxSide = 2048, quality = 0.85): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxSide || height > maxSide) {
+          if (width >= height) {
+            height = Math.round((height * maxSide) / width);
+            width = maxSide;
+          } else {
+            width = Math.round((width * maxSide) / height);
+            height = maxSide;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          return reject(new Error('Failed to get 2D canvas context'));
+        }
+
+        // Fill white first so transparent PNGs do not turn black
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.drawImage(img, 0, 0, width, height);
+        const jpegDataUrl = canvas.toDataURL('image/jpeg', quality);
+        resolve(jpegDataUrl);
+      };
+      img.onerror = (err) => reject(err);
+      img.src = dataUrl;
+    });
+  };
+
+  // Drawing Upload & AR Target Training
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -298,27 +424,44 @@ export const Workspace: React.FC = () => {
 
     const reader = new FileReader();
     reader.onload = async (ev) => {
-      const dataUrl = ev.target?.result as string;
-      setDrawing(dataUrl);
+      const rawDataUrl = ev.target?.result as string;
+
+      let finalDataUrl = rawDataUrl;
+      let finalFileName = file.name;
+      let finalMimeType = file.type || 'image/jpeg';
+      let finalFileSize = file.size;
 
       try {
-        // Trigger Database write immediately
-        await saveDrawingToDb(id!, dataUrl, {
-          fileName: file.name,
-          fileSize: file.size,
-          mimeType: file.type
+        finalDataUrl = await downscaleImage(rawDataUrl, 2048, 0.85);
+        finalMimeType = 'image/jpeg';
+        finalFileName = file.name.replace(/\.[^/.]+$/, '') + '.jpg';
+        const base64Str = finalDataUrl.split(',')[1] || '';
+        finalFileSize = atob(base64Str).length;
+      } catch (err) {
+        console.warn('Downscaling marker image failed, using original:', err);
+        finalDataUrl = rawDataUrl;
+      }
+
+      setDrawing(finalDataUrl);
+
+      // 1. Keep local storage working (fast, offline fallback)
+      try {
+        await saveDrawingToDb(id!, finalDataUrl, {
+          fileName: finalFileName,
+          fileSize: finalFileSize,
+          mimeType: finalMimeType
         });
         localStorage.setItem(`iseeqs_target_url_${id}`, `drawing-plan-${id}`);
         setTargetTrained(true);
         setTrainStatus('done');
-        setDbSynced(true);
-        setTrainError(null);
       } catch (err: any) {
-        console.error('Database write error:', err);
-        setTrainStatus('done'); // Client fallback still succeeds
+        console.error('Local database write error:', err);
         setTargetTrained(true);
-        setDbSynced(true);
+        setTrainStatus('done');
       }
+
+      // 2. Upload to the cloud (Supabase). The marker card shows the real result.
+      await syncMarkerToCloud(finalDataUrl, finalFileName);
     };
 
     reader.onerror = () => {
@@ -333,12 +476,14 @@ export const Workspace: React.FC = () => {
     setDrawing(null);
     setTargetTrained(false);
     setTrainStatus('idle');
-    setDbSynced(false);
+    setCloudStatus(isSupabaseConfigured ? 'idle' : 'off');
+    setCloudMessage(null);
     setTrainError(null);
     localStorage.removeItem(`iseeqs_drawing_${id}`);
     localStorage.removeItem(`iseeqs_target_url_${id}`);
     if (id) {
       await removeDrawingFromDb(id);
+      if (isSupabaseConfigured) await clearMarkerInCloud(id);
     }
   };
 
@@ -668,7 +813,7 @@ export const Workspace: React.FC = () => {
               >
                 <div className="flex items-center justify-center gap-2 text-blue-700 font-black text-xs uppercase tracking-wider mb-0.5">
                   <span className="text-base group-hover:scale-110 transition-transform">📁</span>
-                  <span>{trainStatus === 'uploading' ? 'Receiving to Database...' : 'Upload Image Marker'}</span>
+                  <span>{trainStatus === 'uploading' ? 'Uploading Image Marker...' : 'Upload Image Marker'}</span>
                 </div>
                 <div className="text-[9px] text-blue-500 font-medium">PNG, JPG (Image Tracker for AR)</div>
               </div>
@@ -682,9 +827,29 @@ export const Workspace: React.FC = () => {
                     <div className="text-[11px] font-black text-emerald-900 uppercase tracking-tight flex items-center gap-1 truncate">
                       <span className="text-emerald-600 font-bold">✓</span> Image Marker Ready
                     </div>
-                    <div className="text-[8px] text-emerald-700 font-mono flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      Received in DB
+                    <div
+                      className={`text-[8px] font-mono flex items-center gap-1 ${
+                        cloudStatus === 'saved'
+                          ? 'text-emerald-700'
+                          : cloudStatus === 'error'
+                          ? 'text-red-600'
+                          : 'text-amber-700'
+                      }`}
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full ${
+                          cloudStatus === 'saved'
+                            ? 'bg-emerald-500'
+                            : cloudStatus === 'error'
+                            ? 'bg-red-500'
+                            : 'bg-amber-500 animate-pulse'
+                        }`}
+                      />
+                      {cloudStatus === 'saved' && 'Saved to cloud'}
+                      {cloudStatus === 'saving' && 'Uploading to cloud...'}
+                      {cloudStatus === 'error' && 'Cloud upload failed (this device only)'}
+                      {cloudStatus === 'off' && 'Cloud not configured (this device only)'}
+                      {cloudStatus === 'idle' && 'This device only'}
                     </div>
                   </div>
                 </div>
@@ -704,6 +869,23 @@ export const Workspace: React.FC = () => {
                     ✕
                   </button>
                 </div>
+              </div>
+            )}
+
+            {drawing && cloudStatus === 'error' && (
+              <div className="text-[9px] leading-snug text-red-700 bg-red-50 border border-red-200 rounded-xl px-2.5 py-1.5 flex items-start justify-between gap-2">
+                <span className="break-words min-w-0">{cloudMessage || 'Cloud upload failed.'}</span>
+                <button
+                  onClick={() => syncMarkerToCloud(drawing, 'marker')}
+                  className="shrink-0 font-black uppercase text-red-700 hover:text-red-900 underline"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+            {isSupabaseConfigured && modelSync === 'error' && (
+              <div className="text-[9px] leading-snug text-red-700 bg-red-50 border border-red-200 rounded-xl px-2.5 py-1.5 break-words">
+                Model not saved to cloud: {modelSyncError}
               </div>
             )}
 
@@ -1368,6 +1550,9 @@ export const Workspace: React.FC = () => {
                 onClick={() => {
                   if (id) {
                     saveProjectToDb(id, components, calibration);
+                    if (isSupabaseConfigured && cloudReady && components.length > 0) {
+                      saveProjectToCloud(id, components, calibration);
+                    }
                   }
                   localStorage.setItem(`iseeqs_project_${id}`, JSON.stringify(components));
                   localStorage.setItem(`iseeqs_saved_${id}`, 'true');

@@ -1,18 +1,12 @@
 import React, { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { 
-  ArrowLeft,
-  ExternalLink,
-  Copy,
-  Check,
-  Sparkles
-} from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 
 const DEFAULT_ZAPPAR_URL = 'https://r7jen.zappar.io/7763698978076374850/';
 
 export const ARResult: React.FC = () => {
   const { id } = useParams<{ id: string }>();
-  const [copied, setCopied] = useState(false);
+  const [inAppCopied, setInAppCopied] = useState(false);
 
   // Zappar custom URL if set, otherwise default Zappar project URL
   const [zapparUrl] = useState(() => {
@@ -30,10 +24,13 @@ export const ARResult: React.FC = () => {
   const activeUrl = getZapparUrl();
   const qrCodeImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=480x480&ecc=H&data=${encodeURIComponent(activeUrl)}`;
 
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(activeUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  // In-app AR viewer link. It loads this project's marker + model from the cloud (Supabase),
+  // so it works on any phone, not just the browser that created the project.
+  const inAppArUrl = `${window.location.href.split('#')[0]}#/ar/${id}`;
+  const handleCopyInAppLink = () => {
+    navigator.clipboard.writeText(inAppArUrl);
+    setInAppCopied(true);
+    setTimeout(() => setInAppCopied(false), 2000);
   };
 
   return (
@@ -54,12 +51,6 @@ export const ARResult: React.FC = () => {
 
       {/* Main Single Centered QR Card */}
       <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-xl text-center">
-        {/* Header Badge & Title */}
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-xs font-bold uppercase tracking-wider mb-4">
-          <Sparkles className="w-3.5 h-3.5 text-blue-600 animate-pulse" />
-          <span>Zappar WebAR Experience</span>
-        </div>
-
         <h1 className="text-2xl sm:text-3xl font-black text-slate-900 mb-2">
           Scan QR Code to Launch Zappar AR
         </h1>
@@ -77,25 +68,30 @@ export const ARResult: React.FC = () => {
           <div className="absolute inset-4 sm:inset-5 border-2 border-blue-500/20 rounded-2xl pointer-events-none group-hover:border-blue-500 transition-colors" />
         </div>
 
-        {/* Quick Link Controls (Copy & Open Zappar in Browser) */}
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-3 max-w-md mx-auto mb-6">
-          <button
-            onClick={handleCopyLink}
-            className="w-full sm:w-auto flex-1 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold border border-slate-300 transition-all flex items-center justify-center gap-2 shadow-sm"
-          >
-            {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4 text-slate-600" />}
-            <span>{copied ? 'Link Copied to Clipboard!' : 'Copy Direct Link'}</span>
-          </button>
-
-          <a
-            href={activeUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="w-full sm:w-auto flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-blue-500/20 flex items-center justify-center gap-2"
-          >
-            <span>Launch Zappar AR Directly</span>
-            <ExternalLink className="w-3.5 h-3.5" />
-          </a>
+        {/* Cloud test link: opens this project's AR viewer inside the app, using cloud data */}
+        <div className="max-w-md mx-auto mb-6 text-left bg-slate-50 border border-dashed border-slate-300 rounded-2xl p-3">
+          <p className="text-[10px] font-black uppercase tracking-wider text-slate-600 mb-1">
+            Cloud test link (this app's AR viewer)
+          </p>
+          <p className="text-[11px] text-slate-500 mb-2">
+            Send this to your phone to check that the marker and model load from the cloud.
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={handleCopyInAppLink}
+              className="flex-1 px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 rounded-xl text-[11px] font-bold border border-slate-300 transition-all"
+            >
+              {inAppCopied ? 'Copied!' : 'Copy link'}
+            </button>
+            <a
+              href={inAppArUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 rounded-xl text-[11px] font-bold border border-slate-300 transition-all text-center"
+            >
+              Open
+            </a>
+          </div>
         </div>
 
         {/* Simple 3-Step Student Instructions */}
